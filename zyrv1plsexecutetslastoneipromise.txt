@@ -1,6 +1,4 @@
--- PROJECT SKID v4 — MINIMAL
--- Load this first, then load resistance.
--- No hooks during load. Surveillance starts at 30s.
+-- PROJECT SKID v4 — MINIMAL (FIXED)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -8,12 +6,10 @@ local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
--- Storage
 local remotes = {}
 local upvalues = {}
 local closures = {}
 
--- Key bypass (values only, no function hooks)
 getgenv().SCRIPT_KEY = "BYPASSED"
 getgenv().is_premium = true
 
@@ -21,7 +17,7 @@ print("[OK] Load the resistance script now.")
 print("[OK] Surveillance starts in 30 seconds.")
 
 -- ═══════════════════════════════════════════════════════
--- DELAYED NAMECALL HOOK (starts at 30s)
+-- DELAYED NAMECALL HOOK
 -- ═══════════════════════════════════════════════════════
 
 task.delay(30, function()
@@ -37,9 +33,7 @@ task.delay(30, function()
 
                 for i = 1, count do
                     local arg = select(i, ...)
-                    if type(arg) == "string" or type(arg) == "number" then
-                        args[i] = tostring(arg)
-                    elseif type(arg) == "boolean" then
+                    if type(arg) == "string" or type(arg) == "number" or type(arg) == "boolean" then
                         args[i] = tostring(arg)
                     else
                         args[i] = type(arg)
@@ -55,7 +49,7 @@ task.delay(30, function()
             end
 
             return old(self, ...)
-        end)
+        end))
     end)
 
     if ok then
@@ -66,13 +60,12 @@ task.delay(30, function()
 end)
 
 -- ═══════════════════════════════════════════════════════
--- MEMORY EXTRACTION (starts at 45s)
+-- MEMORY EXTRACTION
 -- ═══════════════════════════════════════════════════════
 
 task.delay(45, function()
     print("[EXTRACT] Scanning loaded functions...")
 
-    -- Check available tools
     local canGetInfo = false
     local canGetUpvalue = false
     local canGetConnections = false
@@ -91,7 +84,6 @@ task.delay(45, function()
     print("[EXTRACT] getupvalue: " .. tostring(canGetUpvalue))
     print("[EXTRACT] getconnections: " .. tostring(canGetConnections))
 
-    -- Walk RunService heartbeat callbacks
     if canGetConnections then
         local ok, connections = pcall(getconnections, RunService.Heartbeat)
 
@@ -118,9 +110,7 @@ task.delay(45, function()
 
                     if canGetUpvalue then
                         for idx = 1, 100 do
-                            local ok2, name, value = pcall(
-                                debug.getupvalue, func, idx
-                            )
+                            local ok2, name, value = pcall(debug.getupvalue, func, idx)
                             if not ok2 or not name then break end
 
                             local val = "?"
@@ -147,8 +137,7 @@ task.delay(45, function()
         end
     end
 
-    print("[EXTRACT] Done. " .. #closures .. " closures, "
-        .. #upvalues .. " upvalues found.")
+    print("[EXTRACT] Done. " .. #closures .. " closures, " .. #upvalues .. " upvalues found.")
     print("[DUMP] Press P to dump everything.")
 end)
 
@@ -165,13 +154,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
     if input.KeyCode == Enum.KeyCode.P then
 
         if not dumpText then
-            -- Build dump
             local out = "=== RESISTANCE DUMP ===\n"
             out = out .. "Remotes: " .. #remotes .. "\n"
             out = out .. "Closures: " .. #closures .. "\n"
             out = out .. "Upvalues: " .. #upvalues .. "\n\n"
 
-            -- Remotes
             out = out .. "--- REMOTES ---\n"
             for i, r in ipairs(remotes) do
                 out = out .. i .. ". " .. r.method .. " -> " .. r.path .. "\n"
@@ -180,7 +167,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
                 end
             end
 
-            -- Closures
             out = out .. "\n--- CLOSURES ---\n"
             for i, c in ipairs(closures) do
                 out = out .. i .. ". " .. (c.signal or "?")
@@ -188,7 +174,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
                     .. " nups=" .. tostring(c.nups) .. "\n"
             end
 
-            -- Upvalues
             out = out .. "\n--- UPVALUES ---\n"
             for i, u in ipairs(upvalues) do
                 out = out .. i .. ". " .. (u.name or "?")
@@ -201,7 +186,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
             print("[DUMP] " .. #out .. " chars ready")
         end
 
-        -- Copy chunk to clipboard
         chunkNum = chunkNum + 1
         local start = (chunkNum - 1) * CHUNK + 1
         local stop = math.min(chunkNum * CHUNK, #dumpText)
