@@ -1,4 +1,4 @@
--- PROJECT SKID v4 — MINIMAL (FIXED)
+-- PROJECT SKID v4.1 — FLAT STRUCTURE
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -14,57 +14,64 @@ getgenv().SCRIPT_KEY = "BYPASSED"
 getgenv().is_premium = true
 
 print("[OK] Load the resistance script now.")
-print("[OK] Surveillance starts in 30 seconds.")
 
--- ═══════════════════════════════════════════════════════
--- DELAYED NAMECALL HOOK
--- ═══════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════
+-- NAMECALL HOOK LOGIC (defined, not executed yet)
+-- ═════════════════════════════════════════════
+
+local oldNamecall = nil
+
+local function namecallHook(self, ...)
+    local method = getnamecallmethod()
+
+    if method == "FireServer" or method == "InvokeServer" then
+        local args = {}
+        local count = select("#", ...)
+
+        for i = 1, count do
+            local arg = select(i, ...)
+            local argType = type(arg)
+
+            if argType == "string" or argType == "number" or argType == "boolean" then
+                args[i] = tostring(arg)
+            else
+                args[i] = argType
+            end
+        end
+
+        table.insert(remotes, {
+            method = method,
+            remote = self.Name,
+            path = self:GetFullName(),
+            args = args
+        })
+    end
+
+    return oldNamecall(self, ...)
+end
+
+-- ═════════════════════════════════════════════
+-- ACTIVATE HOOK AT 30s
+-- ═════════════════════════════════════════════
 
 task.delay(30, function()
     local ok = pcall(function()
-        local old = nil
-
-        old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-
-            if method == "FireServer" or method == "InvokeServer" then
-                local args = {}
-                local count = select("#", ...)
-
-                for i = 1, count do
-                    local arg = select(i, ...)
-                    if type(arg) == "string" or type(arg) == "number" or type(arg) == "boolean" then
-                        args[i] = tostring(arg)
-                    else
-                        args[i] = type(arg)
-                    end
-                end
-
-                table.insert(remotes, {
-                    method = method,
-                    remote = self.Name,
-                    path = self:GetFullName(),
-                    args = args
-                })
-            end
-
-            return old(self, ...)
-        end))
+        oldNamecall = hookmetamethod(game, "__namecall", newcclosure(namecallHook))
     end)
 
     if ok then
         print("[ACTIVE] Surveillance running. Press P to dump.")
     else
-        print("[WARN] Namecall hook failed on this executor.")
+        print("[WARN] Hook failed.")
     end
 end)
 
--- ═══════════════════════════════════════════════════════
--- MEMORY EXTRACTION
--- ═══════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════
+-- MEMORY EXTRACTION AT 45s
+-- ═════════════════════════════════════════════
 
-task.delay(45, function()
-    print("[EXTRACT] Scanning loaded functions...")
+local function extractMemory()
+    print("[EXTRACT] Scanning...")
 
     local canGetInfo = false
     local canGetUpvalue = false
@@ -80,113 +87,131 @@ task.delay(45, function()
         if getconnections then canGetConnections = true end
     end)
 
-    print("[EXTRACT] getinfo: " .. tostring(canGetInfo))
-    print("[EXTRACT] getupvalue: " .. tostring(canGetUpvalue))
-    print("[EXTRACT] getconnections: " .. tostring(canGetConnections))
+    print("[EXTRACT] getinfo=" .. tostring(canGetInfo)
+        .. " getupvalue=" .. tostring(canGetUpvalue)
+        .. " getconnections=" .. tostring(canGetConnections))
 
-    if canGetConnections then
-        local ok, connections = pcall(getconnections, RunService.Heartbeat)
+    if not canGetConnections then
+        print("[EXTRACT] getconnections not available. Skipping.")
+        return
+    end
 
-        if ok and connections then
-            print("[EXTRACT] Heartbeat connections: " .. #connections)
+    local ok, connections = pcall(getconnections, RunService.Heartbeat)
 
-            for i, conn in ipairs(connections) do
-                if conn.Function then
-                    local func = conn.Function
-                    local info = nil
+    if not ok or not connections then
+        print("[EXTRACT] Failed to get connections.")
+        return
+    end
 
-                    if canGetInfo then
-                        pcall(function()
-                            info = debug.getinfo(func)
-                        end)
+    print("[EXTRACT] Heartbeat connections: " .. #connections)
+
+    for i, conn in ipairs(connections) do
+        if conn.Function then
+            local func = conn.Function
+            local info = nil
+
+            if canGetInfo then
+                pcall(function()
+                    info = debug.getinfo(func)
+                end)
+            end
+
+            table.insert(closures, {
+                signal = "Heartbeat",
+                index = i,
+                source = info and info.source or "?",
+                nups = info and info.nups or 0
+            })
+
+            if canGetUpvalue then
+                for idx = 1, 100 do
+                    local gotUp, name, value = pcall(debug.getupvalue, func, idx)
+
+                    if not gotUp or not name then
+                        break
                     end
 
-                    table.insert(closures, {
+                    local val = "?"
+
+                    if type(value) == "string" then
+                        val = value:sub(1, 100)
+                    elseif type(value) == "number" then
+                        val = tostring(value)
+                    elseif type(value) == "boolean" then
+                        val = tostring(value)
+                    end
+
+                    table.insert(upvalues, {
                         signal = "Heartbeat",
                         index = i,
-                        source = info and info.source or "?",
-                        nups = info and info.nups or 0
+                        upIdx = idx,
+                        name = name,
+                        value = val,
+                        vtype = type(value)
                     })
-
-                    if canGetUpvalue then
-                        for idx = 1, 100 do
-                            local ok2, name, value = pcall(debug.getupvalue, func, idx)
-                            if not ok2 or not name then break end
-
-                            local val = "?"
-                            if type(value) == "string" then
-                                val = value:sub(1, 100)
-                            elseif type(value) == "number" then
-                                val = tostring(value)
-                            elseif type(value) == "boolean" then
-                                val = tostring(value)
-                            end
-
-                            table.insert(upvalues, {
-                                signal = "Heartbeat",
-                                index = i,
-                                upIdx = idx,
-                                name = name,
-                                value = val,
-                                vtype = type(value)
-                            })
-                        end
-                    end
                 end
             end
         end
     end
 
-    print("[EXTRACT] Done. " .. #closures .. " closures, " .. #upvalues .. " upvalues found.")
-    print("[DUMP] Press P to dump everything.")
-end)
+    print("[EXTRACT] Done. " .. #closures .. " closures, " .. #upvalues .. " upvalues.")
+end
 
--- ═══════════════════════════════════════════════════════
--- DUMP (press P)
--- ═══════════════════════════════════════════════════════
+task.delay(45, extractMemory)
+
+-- ═════════════════════════════════════════════
+-- DUMP SYSTEM (press P)
+-- ═════════════════════════════════════════════
 
 local dumpText = nil
 local chunkNum = 0
 local CHUNK = 3000
 
+local function buildDump()
+    local out = "=== RESISTANCE DUMP ===\n"
+    out = out .. "Remotes: " .. #remotes .. "\n"
+    out = out .. "Closures: " .. #closures .. "\n"
+    out = out .. "Upvalues: " .. #upvalues .. "\n\n"
+
+    out = out .. "--- REMOTES ---\n"
+    for i, r in ipairs(remotes) do
+        out = out .. i .. ". " .. r.method .. " -> " .. r.path .. "\n"
+        for j, a in ipairs(r.args) do
+            out = out .. "   arg" .. j .. ": " .. a .. "\n"
+        end
+    end
+
+    out = out .. "\n--- CLOSURES ---\n"
+    for i, c in ipairs(closures) do
+        out = out .. i .. ". " .. (c.signal or "?")
+            .. " src=" .. (c.source or "?")
+            .. " nups=" .. tostring(c.nups) .. "\n"
+    end
+
+    out = out .. "\n--- UPVALUES ---\n"
+    for i, u in ipairs(upvalues) do
+        out = out .. i .. ". " .. (u.name or "?")
+            .. " (" .. (u.vtype or "?") .. ") = "
+            .. (u.value or "?") .. "\n"
+    end
+
+    return out
+end
+
 UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
+    if processed then
+        return
+    end
+
     if input.KeyCode == Enum.KeyCode.P then
-
         if not dumpText then
-            local out = "=== RESISTANCE DUMP ===\n"
-            out = out .. "Remotes: " .. #remotes .. "\n"
-            out = out .. "Closures: " .. #closures .. "\n"
-            out = out .. "Upvalues: " .. #upvalues .. "\n\n"
-
-            out = out .. "--- REMOTES ---\n"
-            for i, r in ipairs(remotes) do
-                out = out .. i .. ". " .. r.method .. " -> " .. r.path .. "\n"
-                for j, a in ipairs(r.args) do
-                    out = out .. "   arg" .. j .. ": " .. a .. "\n"
-                end
-            end
-
-            out = out .. "\n--- CLOSURES ---\n"
-            for i, c in ipairs(closures) do
-                out = out .. i .. ". " .. (c.signal or "?")
-                    .. " src=" .. (c.source or "?")
-                    .. " nups=" .. tostring(c.nups) .. "\n"
-            end
-
-            out = out .. "\n--- UPVALUES ---\n"
-            for i, u in ipairs(upvalues) do
-                out = out .. i .. ". " .. (u.name or "?")
-                    .. " (" .. (u.vtype or "?") .. ") = "
-                    .. (u.value or "?") .. "\n"
-            end
-
-            dumpText = out
+            dumpText = buildDump()
             chunkNum = 0
-            print("[DUMP] " .. #out .. " chars ready")
+            print("[DUMP] " .. #dumpText .. " chars ready")
         end
 
         chunkNum = chunkNum + 1
+
         local start = (chunkNum - 1) * CHUNK + 1
         local stop = math.min(chunkNum * CHUNK, #dumpText)
 
