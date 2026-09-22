@@ -1,0 +1,261 @@
+--[[
+    PROJECT SKID — LURAPH SOURCE EXTRACTION
+    Delta Executor
+    
+    Hooks every compilation entry point (loadstring, load)
+    to capture luraph's decoded programs as they materialize.
+    
+    Load this FIRST. Then load the obfuscated Resistance script.
+]]
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+--// CAPTURE STORAGE
+local captured = {
+    chunks = {},     -- every loadstring/load call (THE GOLDMINE)
+    remotes = {},    -- remote calls
+    bypassLog = {},  -- key/whitelist bypass events
+}
+local captureCount = 0
+
+local function log(cat, data)
+    captureCount = captureCount + 1
+    table.insert(captured[cat], { time = os.clock(), data = data })
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- KEY BYPASS (same as before)
+-- ═══════════════════════════════════════════════════════════════
+
+getgenv().SCRIPT_KEY = "BYPASSED"
+getgenv().is_premium = true
+
+local oldRequest = (syn and syn.request) or request or http_request
+if oldRequest then
+    local fakeRequest = function(req)
+        if type(req) == "table" and req.Url then
+            local url = tostring(req.Url)
+            if url:find("key") or url:find("whitelist") or url:find("auth")
+               or url:find("validate") or url:find("license") then
+                print("[BYPASS] Key server intercepted: " .. url)
+                table.insert(captured.bypassLog, { url = url })
+                return {
+                    Success = true, StatusCode = 200, StatusMessage = "OK",
+                    Headers = { ["Content-Type"] = "application/json" },
+                    Body = HttpService:JSONEncode({
+                        success = true, valid = true, premium = true,
+                        status = "SAFE", is_premium = true, detections = 0,
+                        user = LocalPlayer.Name, userId = LocalPlayer.UserId,
+                    })
+                }
+            end
+        end
+        return oldRequest(req)
+    end
+    if syn then syn.request = fakeRequest end
+    if request then request = fakeRequest _G.request = fakeRequest end
+    if http_request then http_request = fakeRequest end
+end
+
+local oldHttpGet
+oldHttpGet = hookfunction(game.HttpGet, function(self, url, ...)
+    if type(url) == "string" then
+        if url:find("key") or url:find("whitelist") or url:find("auth")
+           or url:find("validate") then
+            print("[BYPASS] HttpGet intercepted: " .. url)
+            return HttpService:JSONEncode({
+                success = true, valid = true, premium = true,
+                status = "SAFE", is_premium = true, detections = 0
+            })
+        end
+    end
+    return oldHttpGet(self, url, ...)
+end)
+
+-- Hide hooks from anti-tamper
+if isfunctionhooked then
+    _G.isfunctionhooked = function() return false end
+end
+local oldRestore = restorefunction
+_G.restorefunction = function(func)
+    if func == game.HttpGet then return end
+    if func == loadstring then return end
+    return oldRestore(func)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- THE GOLDMINE: HOOK loadstring + load
+-- ═══════════════════════════════════════════════════════════════
+-- When luraph decodes its VM programs and compiles them,
+-- it calls loadstring/load. We capture EVERYTHING that
+-- passes through — this is the closest to source we can get.
+
+local realLoadstring = loadstring
+local realLoad = load
+
+-- Hook the GLOBAL loadstring
+-- Luraph's wrapper grabs `loadstring` at the top — it reads
+-- from the global environment. If we replace _G.loadstring
+-- BEFORE the wrapper executes, the wrapper stores OUR hooked
+-- version in variable `r`.
+
+_G.loadstring = function(str, chunkname)
+    if type(str) == "string" and #str > 50 then
+        local isBinary = str:sub(1, 1) ~= nil and str:byte(1) == 0x1B
+
+        print(string.format("[SOURCE] loadstring called: %d chars, %s, name=%s",
+            #str,
+            isBinary and "BYTECODE" or "TEXT/LUA",
+            chunkname or "unnamed"
+        ))
+
+        log("chunks", {
+            type = isBinary and "bytecode" or "text",
+            name = chunkname or "unnamed",
+            size = #str,
+            source = str, -- THE ACTUAL DECODED PROGRAM
+            binary = isBinary
+        })
+    end
+    return realLoadstring(str, chunkname)
+end
+
+-- Also hook load (some luraph versions use this)
+if load then
+    _G.load = function(str, chunkname, mode, env)
+        if type(str) == "string" and #str > 50 then
+            local isBinary = str:byte(1) == 0x1B
+
+            print(string.format("[SOURCE] load called: %d chars, %s, name=%s",
+                #str,
+                isBinary and "BYTECODE" or "TEXT/LUA",
+                chunkname or "unnamed"
+            ))
+
+            log("chunks", {
+                type = isBinary and "bytecode" or "text",
+                name = chunkname or "unnamed",
+                size = #str,
+                source = str,
+                binary = isBinary
+            })
+        end
+        return realLoad(str, chunkname, mode, env)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- REMOTE SURVEILLANCE (behavioral capture, same as before)
+-- ═══════════════════════════════════════════════════════════════
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if method == "FireServer" or method == "InvokeServer" then
+        local args = {}
+        local n = select("#", ...)
+        for i = 1, n do
+            local arg = select(i, ...)
+            if type(arg) == "Instance" then
+                args[i] = "Inst:" .. arg.Name
+            else
+                args[i] = tostring(arg)
+            end
+        end
+        log("remotes", {
+            method = method,
+            remote = self.Name,
+            path = self:GetFullName(),
+            args = args
+        })
+    end
+    return oldNamecall(self, ...)
+end))
+
+-- ═══════════════════════════════════════════════════════════════
+-- DUMP SYSTEM — clipboard chunks
+-- ═══════════════════════════════════════════════════════════════
+
+local fullDump = nil
+local currentChunk = 0
+local CHUNK_SIZE = 3000
+
+local function buildDump()
+    local out = "=== LURAPH SOURCE EXTRACTION ===\n"
+    out = out .. "Chunks captured: " .. #captured.chunks .. "\n"
+    out = out .. "Remotes captured: " .. #captured.remotes .. "\n\n"
+
+    -- THE SOURCE CHUNKS
+    out = out .. "=== DECODED PROGRAMS ===\n"
+    for i, chunk in ipairs(captured.chunks) do
+        local d = chunk.data
+        out = out .. "\n--- CHUNK " .. i .. " ---\n"
+        out = out .. "Type: " .. d.type .. "\n"
+        out = out .. "Name: " .. d.name .. "\n"
+        out = out .. "Size: " .. d.size .. " chars\n"
+        if d.binary then
+            out = out .. "(BINARY BYTECODE — needs decompiler)\n"
+        else
+            out = out .. "SOURCE:\n"
+            out = out .. d.source .. "\n"
+        end
+    end
+
+    -- REMOTES
+    out = out .. "\n=== REMOTE CALLS ===\n"
+    for i, entry in ipairs(captured.remotes) do
+        local d = entry.data
+        out = out .. "[" .. i .. "] " .. d.method .. " -> " .. d.path .. "\n"
+        for j, arg in ipairs(d.args) do
+            out = out .. "  arg[" .. j .. "] = " .. arg .. "\n"
+        end
+    end
+
+    return out
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        if not fullDump then
+            fullDump = buildDump()
+            local total = math.ceil(#fullDump / CHUNK_SIZE)
+            print("[DUMP] " .. #fullDump .. " chars, " .. total .. " chunks ready")
+            currentChunk = 0
+        end
+
+        currentChunk = currentChunk + 1
+        local start = (currentChunk - 1) * CHUNK_SIZE + 1
+        local stop = math.min(currentChunk * CHUNK_SIZE, #fullDump)
+
+        if start > #fullDump then
+            print("[DUMP] All chunks copied!")
+            fullDump = nil
+            currentChunk = 0
+            return
+        end
+
+        setclipboard("CHUNK " .. currentChunk .. "/" ..
+            math.ceil(#fullDump / CHUNK_SIZE) .. "\n" .. fullDump:sub(start, stop))
+        print("[DUMP] Chunk " .. currentChunk .. " copied — paste it, press P for next")
+    end
+end)
+
+print("══════════════════════════════════════════")
+print("  LURAPH SOURCE EXTRACTOR + BYPASS")
+print("══════════════════════════════════════════")
+print("  [✓] loadstring hooked")
+print("  [✓] load hooked")
+print("  [✓] Key system neutralized")
+print("  [✓] Anti-tamper suppressed")
+print("  [✓] Remote surveillance active")
+print("══════════════════════════════════════════")
+print("  Watch for [SOURCE] messages in console")
+print("  TEXT/LUA = readable source (paste it!)")
+print("  BYTECODE = compiled (needs decompiler)")
+print("══════════════════════════════════════════")
+print("  NOW LOAD THE OBFUSCATED RESISTANCE SCRIPT")
+print("══════════════════════════════════════════")
