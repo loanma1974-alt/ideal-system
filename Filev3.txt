@@ -1,0 +1,233 @@
+--[[
+    PROJECT SKID — LURAPH SOURCE EXTRACTION v2 (FIXED)
+    No more __eq hook — won't freeze
+    Load FIRST, then load the obfuscated Resistance script.
+]]
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+local captured = {
+    chunks = {},
+    remotes = {},
+    bypassLog = {},
+}
+local captureCount = 0
+
+local function log(cat, data)
+    captureCount = captureCount + 1
+    table.insert(captured[cat], { time = os.clock(), data = data })
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- KEY BYPASS (HTTP only — no string comparison hooking)
+-- ═══════════════════════════════════════════════════════════════
+
+getgenv().SCRIPT_KEY = "BYPASSED"
+getgenv().is_premium = true
+
+local oldRequest = (syn and syn.request) or request or http_request
+if oldRequest then
+    local fakeRequest = function(req)
+        if type(req) == "table" and req.Url then
+            local url = tostring(req.Url)
+            if url:find("key") or url:find("whitelist") or url:find("auth")
+               or url:find("validate") or url:find("license") then
+
+                print("[BYPASS] Key server intercepted: " .. url)
+                table.insert(captured.bypassLog, { url = url })
+
+                return {
+                    Success = true, StatusCode = 200, StatusMessage = "OK",
+                    Headers = { ["Content-Type"] = "application/json" },
+                    Body = HttpService:JSONEncode({
+                        success = true, valid = true, premium = true,
+                        status = "SAFE", is_premium = true, detections = 0,
+                        user = LocalPlayer.Name, userId = LocalPlayer.UserId,
+                    })
+                }
+            end
+        end
+        return oldRequest(req)
+    end
+    if syn then syn.request = fakeRequest end
+    if request then request = fakeRequest _G.request = fakeRequest end
+    if http_request then http_request = fakeRequest end
+end
+
+local oldHttpGet
+oldHttpGet = hookfunction(game.HttpGet, function(self, url, ...)
+    if type(url) == "string" then
+        if url:find("key") or url:find("whitelist") or url:find("auth")
+           or url:find("validate") then
+
+            print("[BYPASS] HttpGet intercepted: " .. url)
+            return HttpService:JSONEncode({
+                success = true, valid = true, premium = true,
+                status = "SAFE", is_premium = true, detections = 0
+            })
+        end
+    end
+    return oldHttpGet(self, url, ...)
+end)
+
+-- Anti-tamper neutralization
+if isfunctionhooked then
+    _G.isfunctionhooked = function() return false end
+end
+local oldRestore = restorefunction
+if oldRestore then
+    _G.restorefunction = function(func)
+        if func == game.HttpGet then return end
+        if func == loadstring then return end
+        return oldRestore(func)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- THE GOLDMINE: HOOK loadstring + load
+-- ═══════════════════════════════════════════════════════════════
+
+local realLoadstring = loadstring
+local realLoad = load
+
+_G.loadstring = function(str, chunkname)
+    if type(str) == "string" and #str > 50 then
+        local isBinary = str:byte(1) == 0x1B
+        print(string.format("[SOURCE] loadstring: %d chars, %s, name=%s",
+            #str, isBinary and "BYTECODE" or "TEXT/LUA", chunkname or "unnamed"))
+        log("chunks", {
+            type = isBinary and "bytecode" or "text",
+            name = chunkname or "unnamed",
+            size = #str,
+            source = str,
+            binary = isBinary
+        })
+    end
+    return realLoadstring(str, chunkname)
+end
+
+if realLoad then
+    _G.load = function(str, chunkname, mode, env)
+        if type(str) == "string" and #str > 50 then
+            local isBinary = str:byte(1) == 0x1B
+            print(string.format("[SOURCE] load: %d chars, %s, name=%s",
+                #str, isBinary and "BYTECODE" or "TEXT/LUA", chunkname or "unnamed"))
+            log("chunks", {
+                type = isBinary and "bytecode" or "text",
+                name = chunkname or "unnamed",
+                size = #str,
+                source = str,
+                binary = isBinary
+            })
+        end
+        return realLoad(str, chunkname, mode, env)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- REMOTE SURVEILLANCE
+-- ═══════════════════════════════════════════════════════════════
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if method == "FireServer" or method == "InvokeServer" then
+        local args = {}
+        local n = select("#", ...)
+        for i = 1, n do
+            local arg = select(i, ...)
+            if type(arg) == "Instance" then
+                args[i] = "Inst:" .. arg.Name
+            else
+                args[i] = tostring(arg)
+            end
+        end
+        log("remotes", {
+            method = method,
+            remote = self.Name,
+            path = self:GetFullName(),
+            args = args
+        })
+    end
+    return oldNamecall(self, ...)
+end))
+
+-- ═══════════════════════════════════════════════════════════════
+-- DUMP — press P for clipboard chunks
+-- ═══════════════════════════════════════════════════════════════
+
+local fullDump = nil
+local currentChunk = 0
+local CHUNK_SIZE = 3000
+
+local function buildDump()
+    local out = "=== LURAPH SOURCE EXTRACTION ===\n"
+    out = out .. "Chunks: " .. #captured.chunks .. "\n"
+    out = out .. "Remotes: " .. #captured.remotes .. "\n\n"
+
+    for i, chunk in ipairs(captured.chunks) do
+        local d = chunk.data
+        out = out .. "\n--- CHUNK " .. i .. " ---\n"
+        out = out .. "Type: " .. d.type .. "\n"
+        out = out .. "Name: " .. d.name .. "\n"
+        out = out .. "Size: " .. d.size .. " chars\n"
+        if not d.binary then
+            out = out .. "SOURCE:\n" .. d.source .. "\n"
+        else
+            out = out .. "(BINARY — " .. d.size .. " bytes)\n"
+        end
+    end
+
+    out = out .. "\n=== REMOTES ===\n"
+    for i, entry in ipairs(captured.remotes) do
+        local d = entry.data
+        out = out .. "[" .. i .. "] " .. d.method .. " -> " .. d.path .. "\n"
+        for j, arg in ipairs(d.args) do
+            out = out .. "  arg[" .. j .. "] = " .. arg .. "\n"
+        end
+    end
+
+    return out
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        if not fullDump then
+            fullDump = buildDump()
+            print("[DUMP] " .. #fullDump .. " chars, " ..
+                math.ceil(#fullDump / CHUNK_SIZE) .. " chunks ready")
+            currentChunk = 0
+        end
+
+        currentChunk = currentChunk + 1
+        local start = (currentChunk - 1) * CHUNK_SIZE + 1
+        local stop = math.min(currentChunk * CHUNK_SIZE, #fullDump)
+
+        if start > #fullDump then
+            print("[DUMP] All chunks copied!")
+            fullDump = nil
+            currentChunk = 0
+            return
+        end
+
+        setclipboard("CHUNK " .. currentChunk .. "/" ..
+            math.ceil(#fullDump / CHUNK_SIZE) .. "\n" .. fullDump:sub(start, stop))
+        print("[DUMP] Chunk " .. currentChunk .. " copied — paste, press P for next")
+    end
+end)
+
+print("══════════════════════════════════════════")
+print("  LURAPH SOURCE EXTRACTOR v2 (FIXED)")
+print("══════════════════════════════════════════")
+print("  [✓] loadstring hooked")
+print("  [✓] load hooked")
+print("  [✓] Key bypass (HTTP only)")
+print("  [✓] Remote surveillance active")
+print("  [✓] NO __eq hook (won't freeze)")
+print("══════════════════════════════════════════")
+print("  NOW LOAD THE OBFUSCATED RESISTANCE SCRIPT")
+print("══════════════════════════════════════════")
