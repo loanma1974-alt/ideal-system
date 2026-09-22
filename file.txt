@@ -1,0 +1,403 @@
+--[[
+    RESISTANCE CAPTURE + KEY BYPASS — Delta Edition
+    Load this FIRST. Then load the obfuscated resistance script.
+    Bypasses key/whitelist + captures all runtime behavior.
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local LocalPlayer = Players.LocalPlayer
+
+-- ═══════════════════════════════════════════════════════════════
+-- PHASE 1: KEY SYSTEM BYPASS
+-- ═══════════════════════════════════════════════════════════════
+
+-- Set a fake script key (the real check happens via HTTP 
+-- or local hash comparison — we intercept both)
+getgenv().SCRIPT_KEY = "BYPASSED_KEY_69420"
+
+-- Hook the HTTP request function that validates keys
+-- Delta uses `request` or `http_request` for HTTP calls
+local oldRequest = (syn and syn.request) or request or http_request
+
+if oldRequest then
+    local fakeRequest = function(req)
+        -- If the script is making a request to validate a key,
+        -- intercept it and return a fake "success" response
+        if type(req) == "table" and req.Url then
+            local url = tostring(req.Url)
+
+            -- Key server endpoints — these patterns match 
+            -- common key validation URLs
+            if url:find("key") or url:find("whitelist") 
+               or url:find("auth") or url:find("validate")
+               or url:find("license") or url:find("api")
+               or url:find("resistance") or url:find("jnkie") then
+
+                print("[BYPASS] Intercepted key validation request to: " .. url)
+
+                -- Return fake success response
+                return {
+                    Success = true,
+                    StatusCode = 200,
+                    StatusMessage = "OK",
+                    Headers = {
+                        ["Content-Type"] = "application/json"
+                    },
+                    Body = HttpService:JSONEncode({
+                        success = true,
+                        valid = true,
+                        premium = true,
+                        status = "SAFE",
+                        whitelist = true,
+                        is_premium = true,
+                        key = "VALID",
+                        expiry = "2099-12-31",
+                        detections = 0,
+                        user = LocalPlayer.Name,
+                        userId = LocalPlayer.UserId,
+                    })
+                }
+            end
+        end
+
+        -- Pass through non-validation requests
+        return oldRequest(req)
+    end
+
+    -- Replace all HTTP request variants
+    if syn then
+        syn.request = fakeRequest
+    end
+    if request then
+        request = fakeRequest
+        _G.request = fakeRequest
+    end
+    if http_request then
+        http_request = fakeRequest
+    end
+end
+
+-- Hook game:HttpGet as well (some scripts use this for validation)
+local oldHttpGet
+oldHttpGet = hookfunction(game.HttpGet, function(self, url, ...)
+    if type(url) == "string" then
+        if url:find("key") or url:find("whitelist") 
+           or url:find("auth") or url:find("validate") then
+
+            print("[BYPASS] Intercepted HttpGet validation to: " .. url)
+
+            -- Return fake valid JSON
+            return HttpService:JSONEncode({
+                success = true,
+                valid = true,
+                premium = true,
+                status = "SAFE",
+                is_premium = true,
+                detections = 0
+            })
+        end
+    end
+    return oldHttpGet(self, url, ...)
+end)
+
+-- Hook getgenv to intercept key checks
+local oldGetgenv = getgenv
+getgenv = function()
+    local env = oldGetgenv()
+    local oldIndex = nil
+
+    -- We can't modify the metatable of getgenv's return on delta,
+    -- but we already set SCRIPT_KEY above. If the script checks
+    -- other env vars (is_premium, etc), set those too:
+    env.SCRIPT_KEY = env.SCRIPT_KEY or "BYPASSED_KEY_69420"
+    env.is_premium = true
+
+    return env
+end
+
+-- Spoof the whitelist check if it validates userIds locally
+-- The hashed IDs (_dea19f1023c3, etc.) are likely MD5/SHA 
+-- hashes of roblox userIds. We can't fake our userId to match,
+-- but we can hook the comparison function.
+
+-- Hook string functions used for hash comparison
+local oldStringSub = string.sub
+local oldStringFind = string.find
+local oldStringGsub = string.gsub
+
+-- Track which hashed IDs the script compares against
+local hashChecks = {}
+
+-- Hook the equality metamethod for string comparisons
+-- in the whitelist validation
+local oldEq
+oldEq = hookmetamethod("", "__eq", newcclosure(function(a, b)
+    -- If comparing a hash-like string (hex format, 12+ chars)
+    if type(a) == "string" and type(b) == "string" then
+        if #a >= 12 and #b >= 12 then
+            local aHex = a:match("^[%da-fA-F]+$")
+            local bHex = b:match("^[%da-fA-F]+$")
+            if aHex and bHex then
+                -- This looks like a hash comparison for whitelist
+                table.insert(hashChecks, {
+                    a = a,
+                    b = b,
+                    time = os.clock()
+                })
+                -- Return true to force whitelist match
+                -- (be careful — this could break other string
+                -- comparisons, so we only do it if one side 
+                -- matches the known whitelist hash format)
+                for _, knownHash in ipairs({
+                    "_dea19f1023c3",
+                    "_7ee90830",
+                    "_597b85b238d7",
+                    "_b01e7d231073",
+                    "_d62e00cf6bd5",
+                    "_42e1beb04cf2",
+                    "_1efbf4a155f8",
+                    "_bea8ab6e4916",
+                    "_3c74e6d3",
+                    "_f8ea78b2cb07",
+                    "_3360e4b47b5e",
+                    "_32b50a0bd05d",
+                }) do
+                    if a == knownHash or b == knownHash then
+                        print("[BYPASS] Whitelist hash match forced: " .. knownHash)
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return oldEq(a, b)
+end))
+
+-- ═══════════════════════════════════════════════════════════════
+-- PHASE 2: ANTI-TAMPER BYPASS
+-- The script has "detections" — anti-tamper that checks if
+-- functions have been hooked. We need to hide our hooks.
+-- ═══════════════════════════════════════════════════════════════
+
+-- The script checks "isfunctionhooked" — we neutralize it
+if isfunctionhooked then
+    local oldIsHooked = isfunctionhooked
+    _G.isfunctionhooked = function(func)
+        -- Always return false — pretend nothing is hooked
+        return false
+    end
+end
+
+-- The script uses "hookfunction" to set its own hooks.
+-- We let those through but track them.
+local oldHookFunction = hookfunction
+_G.hookfunction = function(func, newFunc)
+    print("[TRACK] Script hooked function: " .. tostring(func))
+    return oldHookFunction(func, newFunc)
+end
+
+-- The script uses "restorefunction" to undo hooks.
+-- We intercept this to prevent it from undoing OUR hooks.
+local oldRestoreFunction = restorefunction
+_G.restorefunction = function(func)
+    -- Check if it's trying to restore a function we hooked
+    if func == game.HttpGet then
+        print("[BLOCK] Script tried to restore HttpGet — blocked")
+        return -- don't restore — keep our hook
+    end
+    if func == (syn and syn.request) or func == request then
+        print("[BLOCK] Script tried to restore request — blocked")
+        return
+    end
+    -- Allow other restores
+    return oldRestoreFunction(func)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- PHASE 3: RUNTIME CAPTURE (same as before)
+-- ═══════════════════════════════════════════════════════════════
+
+local capture = {
+    ui = {},
+    remotes = {},
+    connections = {},
+    instances = {},
+    httpCalls = {},
+    settings = {},
+    keyChecks = {},
+}
+
+local captureCount = 0
+local MAX_CAPTURE = 50000
+
+local function log(category, data)
+    captureCount = captureCount + 1
+    if captureCount > MAX_CAPTURE then return end
+    table.insert(capture[category], {
+        time = os.clock(),
+        data = data
+    })
+end
+
+-- Log all captured hash checks
+for _, check in ipairs(hashChecks) do
+    log("keyChecks", check)
+end
+
+-- Intercept all remote calls
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+
+    if method == "FireServer" or method == "InvokeServer" then
+        local args = {}
+        local argCount = select("#", ...)
+        for i = 1, argCount do
+            local arg = select(i, ...)
+            if type(arg) == "table" then
+                local ok, result = pcall(function()
+                    return HttpService:JSONEncode(arg)
+                end)
+                args[i] = ok and result or tostring(arg)
+            elseif type(arg) == "Instance" then
+                args[i] = "Instance:" .. arg.Name .. " (" .. arg.ClassName .. ")"
+            else
+                args[i] = tostring(arg)
+            end
+        end
+
+        log("remotes", {
+            method = method,
+            remote = self.Name,
+            remotePath = self:GetFullName(),
+            args = args
+        })
+    end
+
+    return oldNamecall(self, ...)
+end))
+
+-- Track character events
+task.spawn(function()
+    local lastChar = nil
+    while true do
+        task.wait(0.5)
+        local char = LocalPlayer.Character
+        if char ~= lastChar then
+            lastChar = char
+            if char then
+                log("instances", { type = "character_spawned" })
+
+                char.ChildAdded:Connect(function(child)
+                    log("instances", {
+                        type = "char_child_added",
+                        name = child.Name,
+                        class = child.ClassName
+                    })
+                end)
+
+                char.ChildRemoved:Connect(function(child)
+                    log("instances", {
+                        type = "char_child_removed",
+                        name = child.Name,
+                        class = child.ClassName
+                    })
+                end)
+            end
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- PHASE 4: DUMP SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+local function dumpAll()
+    print("\n" .. string.rep("═", 60))
+    print("  RESISTANCE CAPTURE + BYPASS DUMP")
+    print("  Total events: " .. captureCount)
+    print(string.rep("═", 60))
+
+    print("\n── KEY/WHITELIST BYPASSES ──")
+    print("Script key set: " .. tostring(getgenv().SCRIPT_KEY))
+    print("Hash checks intercepted: " .. #hashChecks)
+    for i, check in ipairs(hashChecks) do
+        print(string.format("  [%d] %s vs %s", i, check.a, check.b))
+    end
+
+    print("\n── REMOTE CALLS (" .. #capture.remotes .. ") ──")
+    for i, entry in ipairs(capture.remotes) do
+        local d = entry.data
+        print(string.format("[%03d] %s → %s (%s)", i, d.method, d.remote, d.remotePath))
+        for j, arg in ipairs(d.args or {}) do
+            print(string.format("      arg[%d] = %s", j, tostring(arg)))
+        end
+    end
+
+    print("\n── INSTANCES (" .. #capture.instances .. ") ──")
+    for i, entry in ipairs(capture.instances) do
+        local d = entry.data
+        if d.class then
+            print(string.format("[%03d] %s → %s", i, d.class, d.parent or "?"))
+        elseif d.name then
+            print(string.format("[%03d] %s: %s (%s)", i, d.type or "?", d.name, d.class or "?"))
+        end
+    end
+
+    -- Save to file
+    if writefile then
+        local output = "RESISTANCE CAPTURE DUMP\n"
+        output = output .. "Time: " .. os.date() .. "\n"
+        output = output .. "Events: " .. captureCount .. "\n\n"
+
+        output = output .. "=== KEY BYPASS LOG ===\n"
+        output = output .. "Key set: " .. tostring(getgenv().SCRIPT_KEY) .. "\n"
+        output = output .. "Hash checks: " .. #hashChecks .. "\n\n"
+
+        output = output .. "=== REMOTES ===\n"
+        for _, entry in ipairs(capture.remotes) do
+            output = output .. HttpService:JSONEncode(entry) .. "\n"
+        end
+
+        output = output .. "\n=== INSTANCES ===\n"
+        for _, entry in ipairs(capture.instances) do
+            output = output .. HttpService:JSONEncode(entry) .. "\n"
+        end
+
+        writefile("resistance_capture.txt", output)
+        print("\n[DUMP] Saved to resistance_capture.txt")
+    end
+
+    if setclipboard then
+        local summary = "Resistance Capture:\n"
+        summary = summary .. "Remotes: " .. #capture.remotes .. "\n"
+        summary = summary .. "Instances: " .. #capture.instances .. "\n"
+        summary = summary .. "Hash checks: " .. #hashChecks .. "\n"
+        setclipboard(summary)
+    end
+end
+
+-- Press P to dump
+game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        dumpAll()
+    end
+end)
+
+-- Auto-dump after 35 seconds
+task.delay(35, function()
+    print("[CAPTURE] Auto-dump in 5s (press P for manual)")
+    task.wait(5)
+    dumpAll()
+end)
+
+print("[BYPASS] Key system neutralized.")
+print("[BYPASS] Whitelist checks intercepted.")
+print("[BYPASS] Anti-tamper detection suppressed.")
+print("[CAPTURE] Runtime surveillance active.")
+print("[CAPTURE] Press P to dump results.")
+print("")
+print(">>> Now load the obfuscated Resistance script <<<")
