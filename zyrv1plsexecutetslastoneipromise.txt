@@ -1,58 +1,57 @@
--- PROJECT SKID v4.1 — FLAT STRUCTURE
+-- OBSERVER v2 — reviewed, bug-fixed
+-- Load this, then load resistance. Surveillance at 30s.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
-local LocalPlayer = Players.LocalPlayer
 
 local remotes = {}
 local upvalues = {}
 local closures = {}
-
-getgenv().SCRIPT_KEY = "BYPASSED"
-getgenv().is_premium = true
+local oldNamecall = nil
 
 print("[OK] Load the resistance script now.")
 
 -- ═════════════════════════════════════════════
--- NAMECALL HOOK LOGIC (defined, not executed yet)
+-- NAMECALL HOOK (defined now, activated at 30s)
 -- ═════════════════════════════════════════════
-
-local oldNamecall = nil
 
 local function namecallHook(self, ...)
-    local method = getnamecallmethod()
+    -- Always pass through first — if logging fails,
+    -- the game still works normally
+    if oldNamecall then
+        local method = getnamecallmethod()
 
-    if method == "FireServer" or method == "InvokeServer" then
-        local args = {}
-        local count = select("#", ...)
+        if method == "FireServer" or method == "InvokeServer" then
+            -- Logging wrapped in pcall — errors here
+            -- can never break the namecall chain
+            pcall(function()
+                local args = {}
+                local count = select("#", ...)
 
-        for i = 1, count do
-            local arg = select(i, ...)
-            local argType = type(arg)
+                for i = 1, count do
+                    local arg = select(i, ...)
+                    local argType = type(arg)
 
-            if argType == "string" or argType == "number" or argType == "boolean" then
-                args[i] = tostring(arg)
-            else
-                args[i] = argType
-            end
+                    if argType == "string" or argType == "number" or argType == "boolean" then
+                        args[i] = tostring(arg)
+                    else
+                        args[i] = argType
+                    end
+                end
+
+                table.insert(remotes, {
+                    method = method,
+                    remote = self.Name,
+                    path = self:GetFullName(),
+                    args = args
+                })
+            end)
         end
 
-        table.insert(remotes, {
-            method = method,
-            remote = self.Name,
-            path = self:GetFullName(),
-            args = args
-        })
+        return oldNamecall(self, ...)
     end
-
-    return oldNamecall(self, ...)
 end
-
--- ═════════════════════════════════════════════
--- ACTIVATE HOOK AT 30s
--- ═════════════════════════════════════════════
 
 task.delay(30, function()
     local ok = pcall(function()
@@ -62,12 +61,12 @@ task.delay(30, function()
     if ok then
         print("[ACTIVE] Surveillance running. Press P to dump.")
     else
-        print("[WARN] Hook failed.")
+        print("[WARN] Hook failed on this executor.")
     end
 end)
 
 -- ═════════════════════════════════════════════
--- MEMORY EXTRACTION AT 45s
+-- MEMORY EXTRACTION (activates at 45s)
 -- ═════════════════════════════════════════════
 
 local function extractMemory()
@@ -92,7 +91,7 @@ local function extractMemory()
         .. " getconnections=" .. tostring(canGetConnections))
 
     if not canGetConnections then
-        print("[EXTRACT] getconnections not available. Skipping.")
+        print("[EXTRACT] getconnections unavailable. Skipping.")
         return
     end
 
@@ -108,21 +107,28 @@ local function extractMemory()
     for i, conn in ipairs(connections) do
         if conn.Function then
             local func = conn.Function
-            local info = nil
 
+            -- Get function metadata
             if canGetInfo then
                 pcall(function()
-                    info = debug.getinfo(func)
+                    local info = debug.getinfo(func)
+                    table.insert(closures, {
+                        signal = "Heartbeat",
+                        index = i,
+                        source = info.source or "?",
+                        what = info.what or "?",
+                        nups = info.nups or 0
+                    })
                 end)
+            else
+                table.insert(closures, {
+                    signal = "Heartbeat",
+                    index = i,
+                    source = "unavailable"
+                })
             end
 
-            table.insert(closures, {
-                signal = "Heartbeat",
-                index = i,
-                source = info and info.source or "?",
-                nups = info and info.nups or 0
-            })
-
+            -- Extract upvalues (captured variables inside closures)
             if canGetUpvalue then
                 for idx = 1, 100 do
                     local gotUp, name, value = pcall(debug.getupvalue, func, idx)
@@ -155,48 +161,18 @@ local function extractMemory()
     end
 
     print("[EXTRACT] Done. " .. #closures .. " closures, " .. #upvalues .. " upvalues.")
+    print("[DUMP] Press P to dump.")
 end
 
 task.delay(45, extractMemory)
 
 -- ═════════════════════════════════════════════
--- DUMP SYSTEM (press P)
+-- DUMP (press P for clipboard chunks)
 -- ═════════════════════════════════════════════
 
 local dumpText = nil
 local chunkNum = 0
 local CHUNK = 3000
-
-local function buildDump()
-    local out = "=== RESISTANCE DUMP ===\n"
-    out = out .. "Remotes: " .. #remotes .. "\n"
-    out = out .. "Closures: " .. #closures .. "\n"
-    out = out .. "Upvalues: " .. #upvalues .. "\n\n"
-
-    out = out .. "--- REMOTES ---\n"
-    for i, r in ipairs(remotes) do
-        out = out .. i .. ". " .. r.method .. " -> " .. r.path .. "\n"
-        for j, a in ipairs(r.args) do
-            out = out .. "   arg" .. j .. ": " .. a .. "\n"
-        end
-    end
-
-    out = out .. "\n--- CLOSURES ---\n"
-    for i, c in ipairs(closures) do
-        out = out .. i .. ". " .. (c.signal or "?")
-            .. " src=" .. (c.source or "?")
-            .. " nups=" .. tostring(c.nups) .. "\n"
-    end
-
-    out = out .. "\n--- UPVALUES ---\n"
-    for i, u in ipairs(upvalues) do
-        out = out .. i .. ". " .. (u.name or "?")
-            .. " (" .. (u.vtype or "?") .. ") = "
-            .. (u.value or "?") .. "\n"
-    end
-
-    return out
-end
 
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then
@@ -205,9 +181,36 @@ UserInputService.InputBegan:Connect(function(input, processed)
 
     if input.KeyCode == Enum.KeyCode.P then
         if not dumpText then
-            dumpText = buildDump()
+            local out = "=== RESISTANCE DUMP ===\n"
+            out = out .. "Remotes: " .. #remotes .. "\n"
+            out = out .. "Closures: " .. #closures .. "\n"
+            out = out .. "Upvalues: " .. #upvalues .. "\n\n"
+
+            out = out .. "--- REMOTES ---\n"
+            for i, r in ipairs(remotes) do
+                out = out .. i .. ". " .. r.method .. " -> " .. r.path .. "\n"
+                for j, a in ipairs(r.args) do
+                    out = out .. "   arg" .. j .. ": " .. a .. "\n"
+                end
+            end
+
+            out = out .. "\n--- CLOSURES ---\n"
+            for i, c in ipairs(closures) do
+                out = out .. i .. ". " .. (c.signal or "?")
+                    .. " src=" .. (c.source or "?")
+                    .. " nups=" .. tostring(c.nups or 0) .. "\n"
+            end
+
+            out = out .. "\n--- UPVALUES ---\n"
+            for i, u in ipairs(upvalues) do
+                out = out .. i .. ". " .. (u.name or "?")
+                    .. " (" .. (u.vtype or "?") .. ") = "
+                    .. (u.value or "?") .. "\n"
+            end
+
+            dumpText = out
             chunkNum = 0
-            print("[DUMP] " .. #dumpText .. " chars ready")
+            print("[DUMP] " .. #out .. " chars ready")
         end
 
         chunkNum = chunkNum + 1
