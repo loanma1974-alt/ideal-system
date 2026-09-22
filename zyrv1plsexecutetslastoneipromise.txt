@@ -1,8 +1,6 @@
---[[
-    PROJECT SKID — LURAPH EXTRACTOR v3.1
-    CLEAN BUILD — Real executor compatible
-    No string.dump, no syn references, no global overwrites
-]]
+-- PROJECT SKID v4 — MINIMAL
+-- Load this first, then load resistance.
+-- No hooks during load. Surveillance starts at 30s.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -10,366 +8,138 @@ local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
-local captured = {
-    remotes = {},
-    bypassLog = {},
-    closures = {},
-    upvalues = {},
-}
-local captureCount = 0
+-- Storage
+local remotes = {}
+local upvalues = {}
+local closures = {}
 
-local function log(cat, data)
-    captureCount = captureCount + 1
-    table.insert(captured[cat], { time = os.clock(), data = data })
-end
-
--- ═══════════════════════════════════════════════════════════════
--- KEY BYPASS
--- ═══════════════════════════════════════════════════════════════
-
+-- Key bypass (values only, no function hooks)
 getgenv().SCRIPT_KEY = "BYPASSED"
 getgenv().is_premium = true
 
--- Find available HTTP request function
-local oldRequest = nil
-local requestSource = nil
+print("[OK] Load the resistance script now.")
+print("[OK] Surveillance starts in 30 seconds.")
 
-pcall(function()
-    if syn and syn.request then
-        oldRequest = syn.request
-        requestSource = "syn"
-    end
-end)
+-- ═══════════════════════════════════════════════════════
+-- DELAYED NAMECALL HOOK (starts at 30s)
+-- ═══════════════════════════════════════════════════════
 
-if not oldRequest then
-    pcall(function()
-        if request then
-            oldRequest = request
-            requestSource = "request"
-        end
-    end)
-end
+task.delay(30, function()
+    local ok = pcall(function()
+        local old = nil
 
-if not oldRequest then
-    pcall(function()
-        if http_request then
-            oldRequest = http_request
-            requestSource = "http_request"
-        end
-    end)
-end
+        old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+            local method = getnamecallmethod()
 
-if oldRequest then
-    print("[BYPASS] HTTP request function found: " .. requestSource)
+            if method == "FireServer" or method == "InvokeServer" then
+                local args = {}
+                local count = select("#", ...)
 
-    local fakeRequest = function(req)
-        if type(req) == "table" and type(req.Url) == "string" then
-            local url = req.Url
-            if url:find("key") or url:find("whitelist") or url:find("auth")
-               or url:find("validate") or url:find("license") then
-
-                print("[BYPASS] Key server intercepted: " .. url)
-                table.insert(captured.bypassLog, { url = url })
-
-                return {
-                    Success = true,
-                    StatusCode = 200,
-                    StatusMessage = "OK",
-                    Headers = { ["Content-Type"] = "application/json" },
-                    Body = HttpService:JSONEncode({
-                        success = true,
-                        valid = true,
-                        premium = true,
-                        status = "SAFE",
-                        is_premium = true,
-                        detections = 0,
-                        user = LocalPlayer.Name,
-                        userId = LocalPlayer.UserId,
-                    })
-                }
-            end
-        end
-        return oldRequest(req)
-    end
-
-    -- Replace based on which one existed
-    if requestSource == "syn" then
-        syn.request = fakeRequest
-    elseif requestSource == "request" then
-        _G.request = fakeRequest
-    elseif requestSource == "http_request" then
-        _G.http_request = fakeRequest
-    end
-else
-    print("[WARN] No HTTP request function found — key bypass limited to HttpGet")
-end
-
--- HttpGet hook
-local oldHttpGet = nil
-pcall(function()
-    oldHttpGet = game.HttpGet
-end)
-
-if oldHttpGet then
-    local success = pcall(function()
-        hookfunction(game.HttpGet, function(self, url, ...)
-            if type(url) == "string" then
-                if url:find("key") or url:find("whitelist") or url:find("auth")
-                   or url:find("validate") then
-                    print("[BYPASS] HttpGet intercepted: " .. url)
-                    return HttpService:JSONEncode({
-                        success = true, valid = true, premium = true,
-                        status = "SAFE", is_premium = true, detections = 0
-                    })
-                end
-            end
-            return oldHttpGet(self, url, ...)
-        end)
-    end)
-
-    if success then
-        print("[BYPASS] HttpGet hooked")
-    else
-        print("[WARN] HttpGet hook failed")
-    end
-end
-
--- Anti-tamper: hide our hooks
-pcall(function()
-    if isfunctionhooked then
-        local oldIsHooked = isfunctionhooked
-        hookfunction(isfunctionhooked, function(func)
-            return false
-        end)
-    end
-end)
-
--- ═══════════════════════════════════════════════════════════════
--- SAFE SURVEILLANCE: namecall hook
--- ═══════════════════════════════════════════════════════════════
-
-local oldNamecall = nil
-pcall(function()
-    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-
-        if method == "FireServer" or method == "InvokeServer" then
-            local args = {}
-            local n = select("#", ...)
-            for i = 1, n do
-                local arg = select(i, ...)
-                if type(arg) == "table" then
-                    local ok, res = pcall(function()
-                        return HttpService:JSONEncode(arg)
-                    end)
-                    if ok then
-                        args[i] = res
-                    else
+                for i = 1, count do
+                    local arg = select(i, ...)
+                    if type(arg) == "string" or type(arg) == "number" then
                         args[i] = tostring(arg)
+                    elseif type(arg) == "boolean" then
+                        args[i] = tostring(arg)
+                    else
+                        args[i] = type(arg)
                     end
-                elseif type(arg) == "userdata" then
-                    args[i] = "Instance:" .. tostring(arg.Name or "?")
-                else
-                    args[i] = tostring(arg)
                 end
+
+                table.insert(remotes, {
+                    method = method,
+                    remote = self.Name,
+                    path = self:GetFullName(),
+                    args = args
+                })
             end
 
-            log("remotes", {
-                method = method,
-                remote = self.Name,
-                path = self:GetFullName(),
-                args = args
-            })
-        end
+            return old(self, ...)
+        end)
+    end)
 
-        return oldNamecall(self, ...)
-    end))
+    if ok then
+        print("[ACTIVE] Surveillance running. Press P to dump.")
+    else
+        print("[WARN] Namecall hook failed on this executor.")
+    end
 end)
 
-if oldNamecall then
-    print("[SURVEIL] namecall hook active")
-else
-    print("[WARN] namecall hook failed")
-end
+-- ═══════════════════════════════════════════════════════
+-- MEMORY EXTRACTION (starts at 45s)
+-- ═══════════════════════════════════════════════════════
 
--- ═══════════════════════════════════════════════════════════════
--- PHASE 2: POST-LOAD EXTRACTION (no string.dump needed)
--- ═══════════════════════════════════════════════════════════════
+task.delay(45, function()
+    print("[EXTRACT] Scanning loaded functions...")
 
-local function extractFunctions()
-    print("\n[PHASE2] Starting memory extraction...")
-
-    -- Check what tools we have
-    local hasDebugGetinfo = false
-    local hasDebugGetupvalue = false
-    local hasGetconnections = false
+    -- Check available tools
+    local canGetInfo = false
+    local canGetUpvalue = false
+    local canGetConnections = false
 
     pcall(function()
-        if debug.getinfo then hasDebugGetinfo = true end
+        if debug.getinfo then canGetInfo = true end
     end)
     pcall(function()
-        if debug.getupvalue then hasDebugGetupvalue = true end
+        if debug.getupvalue then canGetUpvalue = true end
     end)
     pcall(function()
-        if getconnections then hasGetconnections = true end
+        if getconnections then canGetConnections = true end
     end)
 
-    print("[PHASE2] debug.getinfo: " .. tostring(hasDebugGetinfo))
-    print("[PHASE2] debug.getupvalue: " .. tostring(hasDebugGetupvalue))
-    print("[PHASE2] getconnections: " .. tostring(hasGetconnections))
+    print("[EXTRACT] getinfo: " .. tostring(canGetInfo))
+    print("[EXTRACT] getupvalue: " .. tostring(canGetUpvalue))
+    print("[EXTRACT] getconnections: " .. tostring(canGetConnections))
 
-    -- Method 1: Walk UI for button callbacks
-    print("[PHASE2] Walking UI tree...")
+    -- Walk RunService heartbeat callbacks
+    if canGetConnections then
+        local ok, connections = pcall(getconnections, RunService.Heartbeat)
 
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then
-        pcall(function()
-            if gethui then
-                playerGui = gethui()
-            end
-        end)
-    end
+        if ok and connections then
+            print("[EXTRACT] Heartbeat connections: " .. #connections)
 
-    if playerGui then
-        local uiCount = 0
+            for i, conn in ipairs(connections) do
+                if conn.Function then
+                    local func = conn.Function
+                    local info = nil
 
-        local function walkGui(parent, depth)
-            if depth > 20 then return end
-            for _, child in ipairs(parent:GetChildren()) do
-                uiCount = uiCount + 1
+                    if canGetInfo then
+                        pcall(function()
+                            info = debug.getinfo(func)
+                        end)
+                    end
 
-                if hasGetconnections then
-                    if child:IsA("TextButton") or child:IsA("GuiButton")
-                       or child:IsA("ImageButton") then
+                    table.insert(closures, {
+                        signal = "Heartbeat",
+                        index = i,
+                        source = info and info.source or "?",
+                        nups = info and info.nups or 0
+                    })
 
-                        local ok, connections = pcall(getconnections, child.MouseButton1Click)
-                        if ok and connections then
-                            for i, conn in ipairs(connections) do
-                                if conn.Function then
-                                    local func = conn.Function
-                                    local info = nil
-                                    if hasDebugGetinfo then
-                                        pcall(function()
-                                            info = debug.getinfo(func)
-                                        end)
-                                    end
+                    if canGetUpvalue then
+                        for idx = 1, 100 do
+                            local ok2, name, value = pcall(
+                                debug.getupvalue, func, idx
+                            )
+                            if not ok2 or not name then break end
 
-                                    log("closures", {
-                                        type = "button_callback",
-                                        element = child.Name,
-                                        source = info and info.source or "unknown",
-                                        what = info and info.what or "unknown",
-                                        linedefined = info and info.linedefined or 0,
-                                        nups = info and info.nups or 0
-                                    })
-
-                                    -- Dump upvalues (this gives us variable names
-                                    -- and values from the closure's captured scope)
-                                    if hasDebugGetupvalue then
-                                        for upIndex = 1, 100 do
-                                            local ok2, uvName, uvValue = pcall(
-                                                debug.getupvalue, func, upIndex
-                                            )
-                                            if not ok2 or not uvName then break end
-
-                                            local valueStr = "..."
-                                            if type(uvValue) == "string"
-                                               or type(uvValue) == "number"
-                                               or type(uvValue) == "boolean" then
-                                                valueStr = tostring(uvValue)
-                                            elseif type(uvValue) == "Instance" then
-                                                valueStr = "Inst:" .. tostring(uvValue.Name)
-                                            end
-
-                                            log("upvalues", {
-                                                element = child.Name,
-                                                upIndex = upIndex,
-                                                name = uvName,
-                                                value = valueStr,
-                                                type = type(uvValue)
-                                            })
-                                        end
-                                    end
-                                end
+                            local val = "?"
+                            if type(value) == "string" then
+                                val = value:sub(1, 100)
+                            elseif type(value) == "number" then
+                                val = tostring(value)
+                            elseif type(value) == "boolean" then
+                                val = tostring(value)
                             end
-                        end
-                    end
-                end
 
-                walkGui(child, depth + 1)
-            end
-        end
-
-        walkGui(playerGui, 0)
-        print("[PHASE2] Walked " .. uiCount .. " UI elements")
-    end
-
-    -- Method 2: Extract RunService callback info
-    print("[PHASE2] Extracting RunService callbacks...")
-
-    if hasGetconnections then
-        local signals = {
-            { RunService.Heartbeat, "Heartbeat" },
-            { RunService.RenderStepped, "RenderStepped" },
-            { RunService.Stepped, "Stepped" },
-        }
-
-        for _, signalInfo in ipairs(signals) do
-            local signal = signalInfo[1]
-            local signalName = signalInfo[2]
-
-            local ok, connections = pcall(getconnections, signal)
-            if ok and connections then
-                print("[PHASE2] " .. signalName .. ": " .. #connections .. " connections")
-
-                for i, conn in ipairs(connections) do
-                    if conn.Function then
-                        local func = conn.Function
-                        local info = nil
-                        if hasDebugGetinfo then
-                            pcall(function()
-                                info = debug.getinfo(func)
-                            end)
-                        end
-
-                        log("closures", {
-                            type = "runservice_callback",
-                            signal = signalName,
-                            index = i,
-                            source = info and info.source or "unknown",
-                            what = info and info.what or "unknown",
-                            linedefined = info and info.linedefined or 0,
-                            nups = info and info.nups or 0
-                        })
-
-                        -- Upvalues give us the actual captured variables
-                        -- from the script's scope — this is where the
-                        -- real logic data lives
-                        if hasDebugGetupvalue then
-                            for upIndex = 1, 200 do
-                                local ok2, uvName, uvValue = pcall(
-                                    debug.getupvalue, func, upIndex
-                                )
-                                if not ok2 or not uvName then break end
-
-                                local valueStr = "..."
-                                if type(uvValue) == "string"
-                                   or type(uvValue) == "number"
-                                   or type(uvValue) == "boolean" then
-                                    valueStr = tostring(uvValue)
-                                elseif type(uvValue) == "Instance" then
-                                    valueStr = "Inst:" .. tostring(uvValue.Name)
-                                end
-
-                                log("upvalues", {
-                                    signal = signalName,
-                                    index = i,
-                                    upIndex = upIndex,
-                                    name = uvName,
-                                    value = valueStr,
-                                    type = type(uvValue)
-                                })
-                            end
+                            table.insert(upvalues, {
+                                signal = "Heartbeat",
+                                index = i,
+                                upIdx = idx,
+                                name = name,
+                                value = val,
+                                vtype = type(value)
+                            })
                         end
                     end
                 end
@@ -377,167 +147,75 @@ local function extractFunctions()
         end
     end
 
-    -- Method 3: Scan global environment for script functions
-    print("[PHASE2] Scanning globals...")
+    print("[EXTRACT] Done. " .. #closures .. " closures, "
+        .. #upvalues .. " upvalues found.")
+    print("[DUMP] Press P to dump everything.")
+end)
 
-    local genv = getgenv()
-    for key, value in pairs(genv) do
-        if type(value) == "function" then
-            local info = nil
-            if hasDebugGetinfo then
-                pcall(function()
-                    info = debug.getinfo(value)
-                end)
-            end
+-- ═══════════════════════════════════════════════════════
+-- DUMP (press P)
+-- ═══════════════════════════════════════════════════════
 
-            if info and info.source and info.source ~= "=[C]" then
-                log("closures", {
-                    type = "global_function",
-                    name = key,
-                    source = info.source,
-                    what = info.what,
-                    linedefined = info.linedefined,
-                    nups = info.nups
-                })
-
-                if hasDebugGetupvalue then
-                    for upIndex = 1, 50 do
-                        local ok2, uvName, uvValue = pcall(
-                            debug.getupvalue, value, upIndex
-                        )
-                        if not ok2 or not uvName then break end
-
-                        local valueStr = "..."
-                        if type(uvValue) == "string"
-                           or type(uvValue) == "number"
-                           or type(uvValue) == "boolean" then
-                            valueStr = tostring(uvValue)
-                        end
-
-                        log("upvalues", {
-                            global = key,
-                            upIndex = upIndex,
-                            name = uvName,
-                            value = valueStr,
-                            type = type(uvValue)
-                        })
-                    end
-                end
-            end
-        end
-    end
-
-    print("[PHASE2] Extraction complete.")
-    print("[PHASE2] Closures: " .. #captured.closures)
-    print("[PHASE2] Upvalues: " .. #captured.upvalues)
-    print("[PHASE2] Press P to dump everything")
-end
-
--- ═══════════════════════════════════════════════════════════════
--- DUMP SYSTEM
--- ═══════════════════════════════════════════════════════════════
-
-local fullDump = nil
-local currentChunk = 0
-local CHUNK_SIZE = 3000
-
-local function buildDump()
-    local out = "=== LURAPH v3.1 EXTRACTION ===\n"
-    out = out .. "Remotes: " .. #captured.remotes .. "\n"
-    out = out .. "Closures: " .. #captured.closures .. "\n"
-    out = out .. "Upvalues: " .. #captured.upvalues .. "\n\n"
-
-    out = out .. "=== REMOTE CALLS ===\n"
-    for i, entry in ipairs(captured.remotes) do
-        local d = entry.data
-        if d.method then
-            out = out .. "[" .. i .. "] " .. d.method .. " -> " .. d.path .. "\n"
-            for j, arg in ipairs(d.args or {}) do
-                out = out .. "  arg[" .. j .. "] = " .. arg .. "\n"
-            end
-        end
-    end
-
-    out = out .. "\n=== CLOSURES ===\n"
-    for i, entry in ipairs(captured.closures) do
-        local d = entry.data
-        out = out .. "[" .. i .. "] " .. (d.type or "?")
-        if d.element then out = out .. " element=" .. d.element end
-        if d.signal then out = out .. " signal=" .. d.signal end
-        if d.name then out = out .. " name=" .. d.name end
-        if d.source then out = out .. " source=" .. d.source end
-        if d.what then out = out .. " what=" .. d.what end
-        out = out .. "\n"
-    end
-
-    out = out .. "\n=== UPVALUES ===\n"
-    for i, entry in ipairs(captured.upvalues) do
-        local d = entry.data
-        out = out .. "[" .. i .. "] " .. (d.name or "?")
-            .. " (" .. (d.type or "?") .. ") = "
-            .. (d.value or "complex") .. "\n"
-    end
-
-    out = out .. "\n=== BYPASS LOG ===\n"
-    for i, entry in ipairs(captured.bypassLog) do
-        out = out .. "[" .. i .. "] " .. (entry.url or "?") .. "\n"
-    end
-
-    return out
-end
+local dumpText = nil
+local chunkNum = 0
+local CHUNK = 3000
 
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
-
     if input.KeyCode == Enum.KeyCode.P then
-        if not fullDump then
-            fullDump = buildDump()
-            local total = math.ceil(#fullDump / CHUNK_SIZE)
-            print("[DUMP] " .. #fullDump .. " chars, " .. total .. " chunks")
-            currentChunk = 0
+
+        if not dumpText then
+            -- Build dump
+            local out = "=== RESISTANCE DUMP ===\n"
+            out = out .. "Remotes: " .. #remotes .. "\n"
+            out = out .. "Closures: " .. #closures .. "\n"
+            out = out .. "Upvalues: " .. #upvalues .. "\n\n"
+
+            -- Remotes
+            out = out .. "--- REMOTES ---\n"
+            for i, r in ipairs(remotes) do
+                out = out .. i .. ". " .. r.method .. " -> " .. r.path .. "\n"
+                for j, a in ipairs(r.args) do
+                    out = out .. "   arg" .. j .. ": " .. a .. "\n"
+                end
+            end
+
+            -- Closures
+            out = out .. "\n--- CLOSURES ---\n"
+            for i, c in ipairs(closures) do
+                out = out .. i .. ". " .. (c.signal or "?")
+                    .. " src=" .. (c.source or "?")
+                    .. " nups=" .. tostring(c.nups) .. "\n"
+            end
+
+            -- Upvalues
+            out = out .. "\n--- UPVALUES ---\n"
+            for i, u in ipairs(upvalues) do
+                out = out .. i .. ". " .. (u.name or "?")
+                    .. " (" .. (u.vtype or "?") .. ") = "
+                    .. (u.value or "?") .. "\n"
+            end
+
+            dumpText = out
+            chunkNum = 0
+            print("[DUMP] " .. #out .. " chars ready")
         end
 
-        currentChunk = currentChunk + 1
-        local startPos = (currentChunk - 1) * CHUNK_SIZE + 1
-        local endPos = math.min(currentChunk * CHUNK_SIZE, #fullDump)
+        -- Copy chunk to clipboard
+        chunkNum = chunkNum + 1
+        local start = (chunkNum - 1) * CHUNK + 1
+        local stop = math.min(chunkNum * CHUNK, #dumpText)
 
-        if startPos > #fullDump then
-            print("[DUMP] All chunks copied!")
-            fullDump = nil
-            currentChunk = 0
+        if start > #dumpText then
+            print("[DUMP] Complete!")
+            dumpText = nil
+            chunkNum = 0
             return
         end
 
-        setclipboard("CHUNK " .. currentChunk .. "/"
-            .. math.ceil(#fullDump / CHUNK_SIZE) .. "\n"
-            .. fullDump:sub(startPos, endPos))
-        print("[DUMP] Chunk " .. currentChunk .. " copied — paste, press P for next")
-    end
-
-    if input.KeyCode == Enum.KeyCode.O then
-        extractFunctions()
+        setclipboard("CHUNK " .. chunkNum .. "/"
+            .. math.ceil(#dumpText / CHUNK) .. "\n"
+            .. dumpText:sub(start, stop))
+        print("[DUMP] Chunk " .. chunkNum .. " on clipboard")
     end
 end)
-
--- Auto-extract at 40s
-task.delay(40, function()
-    print("[PHASE2] Auto-extracting in 5s...")
-    task.wait(5)
-    extractFunctions()
-end)
-
-print("══════════════════════════════════════════")
-print("  LURAPH EXTRACTOR v3.1 — CLEAN")
-print("══════════════════════════════════════════")
-print("  [✓] Key bypass active")
-print("  [✓] namecall surveillance")
-print("  [✓] NO loadstring hook (JD_D2 safe)")
-print("  [✓] NO string.dump (Real compatible)")
-print("══════════════════════════════════════════")
-print("  O = extract functions from memory")
-print("  P = dump to clipboard")
-print("══════════════════════════════════════════")
-print("  1. Load the resistance script")
-print("  2. Wait for auto-extract (40s) or press O")
-print("  3. Press P to dump")
-print("══════════════════════════════════════════")
